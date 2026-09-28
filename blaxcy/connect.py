@@ -15,10 +15,10 @@ from .transport import LocalTransport
 
 
 class Runtime:
-    def __init__(self, fps: int, ocr: bool, host: str, port: int):
+    def __init__(self, fps: int, ocr: bool, host: str, port: int, token: str):
         self.stop_event = threading.Event()
         self.eye = Eye(EyeConfig(target_fps=fps, ocr=ocr))
-        self.token = session_token()
+        self.token = token
         self.host = host
         self.port = port
         self.latest_state: dict = {}
@@ -38,7 +38,7 @@ class Runtime:
 def run_connect(fps: int, ocr: bool, host: str, port: int, pairing_path: str) -> int:
     pairing = create_pairing()
     save_pairing(pairing_path, pairing)
-    runtime = Runtime(fps, ocr, host, port)
+    runtime = Runtime(fps, ocr, host, port, pairing.token)
     signal.signal(signal.SIGINT, runtime.stop)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, runtime.stop)
