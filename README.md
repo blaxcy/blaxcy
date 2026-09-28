@@ -1,167 +1,72 @@
 # BLAXCY
 
-BLAXCY is a recoverable, foreground-only device-control runtime. The GitHub repository is the source-of-truth and recovery point: a new device can recreate the software from the repo without depending on the old device.
+Foreground device-control runtime with a GitHub-centered recovery/control bridge.
 
 ## Architecture
 
-    GitHub repo
-        ↓
-    one-command bootstrap
-        ↓
+The repository contains the complete recoverable implementation. No permanent BLAXCY background agent is required.
+
+    GitHub repository
+          ↓
+    clone + setup
+          ↓
     foreground BLAXCY runtime
-        ├── EYE
-        │    ├── continuous screen capture
-        │    ├── pixel/change detection
-        │    ├── changed-region JPEGs
-        │    ├── full visual keyframes
-        │    ├── frame hashes
-        │    ├── native accessibility/UI semantics
-        │    └── optional OCR
-        ├── MOUSE
-        ├── KEYBOARD
-        └── authenticated loopback transport
-                 ↓
-          repo-provided MCP connector
-                 ↓
-              ChatGPT / MCP host
+       ↙       ↓       ↘
+     EYE     MOUSE   KEYBOARD
+          ↕
+    GitHub control mailbox
+          ↕
+       ChatGPT
 
-There is no permanent background agent. Device control exists only while the foreground runtime is running.
+The GitHub bridge uses an Issue's comments as a durable command mailbox. The device polls for structured commands and posts structured results. This removes the need for a separately hosted permanent relay for command/control.
 
-## One-command recovery
+GitHub is not a millisecond realtime media transport. The bridge is therefore a control/recovery channel, not a high-frequency video transport.
 
-    git clone https://github.com/blaxcy/blaxcy.git
-    cd blaxcy
-    python scripts/bootstrap.py
+## Local mode
 
-The bootstrap creates the virtual environment, installs the repository and starts a fresh foreground session. Session credentials are generated locally and are ignored by Git.
+    python -m blaxcy connect
 
-The repository is the recovery point: losing the old device does not remove the source code or setup logic.
+This starts the existing authenticated loopback WebSocket for a low-latency local client.
 
-## ChatGPT / MCP connector
+## GitHub bridge
 
-BLAXCY includes an MCP server:
+The bridge uses one GitHub Issue as the mailbox.
 
-    python -m blaxcy mcp
+Set these environment variables on the device. Never commit the token:
 
-or:
+    BLAXCY_GITHUB_REPOSITORY=blaxcy/blaxcy
+    BLAXCY_GITHUB_ISSUE=<issue number>
+    BLAXCY_GITHUB_TOKEN=<fine-grained token>
+    BLAXCY_GITHUB_ALLOWED_ACTOR=blaxcy
 
-    blaxcy-mcp
+Then run:
 
-Default transport is stdio. This is intended for an MCP host that launches the connector as a local subprocess.
+    python -m blaxcy github-bridge
 
-For a remotely reachable MCP endpoint:
+A command is a GitHub Issue comment beginning with:
 
-    python -m blaxcy mcp --transport streamable-http
+    BLAXCY_CMD {"id":"cmd-1","command":{"action":"mouse.click","x":820,"y":430}}
 
-The MCP server exposes:
+The device posts:
 
-- `system_status`
-- `eye_state`
-- `eye_snapshot`
-- `eye_events`
-- `mouse_move`
-- `mouse_click`
-- `mouse_scroll`
-- `keyboard_press`
-- `keyboard_hotkey`
-- `keyboard_type`
+    BLAXCY_RESULT {"id":"cmd-1","ok":true,"result":{...}}
 
-The connector automatically starts the foreground BLAXCY runtime if one is not already reachable. It authenticates to that runtime using the fresh local pairing token. The secret token is never returned by the MCP tools and is never committed to GitHub.
+Only the existing structured mouse/keyboard command executor is exposed. Arbitrary shell execution is not available.
 
-The current MCP implementation is a complete repository-side connector. **ChatGPT itself still needs to be configured to use the MCP server.** ChatGPT connects to remote MCP servers; it cannot directly reach a local MCP server. OpenAI documents Secure MCP Tunnel for connecting a local/private MCP server without exposing it publicly. Custom MCP apps are configured with an endpoint and authentication in supported ChatGPT developer-mode/app environments. 
-
-For remote HTTP, keep the server behind HTTPS and an authenticated tunnel/deployment. The repository defaults to loopback and does not expose the device to the public internet.
-
-## EYE
-
-EYE continuously captures the primary display. It compares consecutive frames locally and normally sends only changed regions. Changed regions are JPEG crops; large changes trigger a complete visual keyframe.
-
-Every update carries a monotonic revision and frame hash. The connector can request only events after a known revision, so the model does not need a full screenshot on every update.
-
-The semantic layer combines:
-
-- Windows UI Automation when `pywinauto` is installed
-- Linux AT-SPI when `pyatspi` is installed and available
-- macOS accessibility hook when a platform adapter is available
-- OCR when `pytesseract` is installed
-- pixel geometry and visual evidence
-- stable semantic element IDs
-- actionable-element metadata
-
-Native accessibility is best-effort because each operating system can require user permissions and platform-specific runtime components. If native accessibility is unavailable, EYE continues using pixels and optional OCR.
-
-The 1–5 ms change-detection number is a local processing target, not a guaranteed end-to-end visual latency. Display refresh rate, capture APIs, hardware, resolution and OS scheduling limit the actual rate of new information.
-
-## Pairing and recovery
-
-Every foreground session creates:
-
-- a fresh device ID
-- a fresh session ID
-- a fresh random control token
-
-The token is stored only in `.blaxcy/pairing.json`, which is ignored by Git.
-
-The old device can therefore disappear without taking the system with it:
-
-    new device
-      ↓
-    clone repo
-      ↓
-    bootstrap
-      ↓
-    fresh credentials
-      ↓
-    fresh BLAXCY session
-
-## Local control protocol
-
-The runtime listens on:
-
-    ws://127.0.0.1:8765
-
-Authentication is required before any state or command operation.
-
-Supported protocol operations include:
-
-    {"type":"state.get"}
-    {"type":"events.get","revision":123}
-    {"type":"command","action":"mouse.click","x":820,"y":430}
-    {"type":"command","action":"keyboard.type","text":"hello"}
-
-No arbitrary shell execution is exposed.
+GitHub's REST API supports reading and creating Issue comments; fine-grained tokens can be restricted to the repository Issues permission needed by this bridge.
 
 ## Security
 
-- foreground-only runtime
-- fresh per-session token
-- token never committed to GitHub
-- constant-time token comparison
-- bounded mouse/keyboard commands
-- no arbitrary shell execution
-- loopback by default
-- remote MCP only through explicit authenticated deployment/tunnel
-- Ctrl+C stops the runtime
+Use a private repository for a real control mailbox. Issue comments on a public repository are publicly readable, so the current public blaxcy/blaxcy repository should be treated as development-only for this bridge until its visibility is changed.
 
-## Platform notes
+The device keeps the GitHub token outside the repository, checks the GitHub actor before accepting commands, and uses the existing bounded command executor.
 
-Windows:
+## Recovery
 
-    python -m pip install -e '.[windows]'
+The source, bridge, protocol, device runtime, and setup code live in the repository. A replacement device can clone the repository and recreate the runtime without relying on the lost device.
 
-Linux:
+## EYE status
 
-    python -m pip install -e '.[linux]'
+EYE continuously captures the screen, performs pixel-change detection, tracks cursor changes, maintains revisions, emits dirty-region deltas, and periodically emits semantic keyframes. It remains local-first; the GitHub bridge should carry control/state summaries rather than raw high-frequency frames.
 
-macOS:
-
-    python -m pip install -e '.[macos]'
-
-Native accessibility permissions may still need to be granted in the operating system.
-
-## Development
-
-    python -m pip install -e .
-    python -m pytest -q
-
-GitHub Actions runs the test suite on pushes and pull requests.
+A true realtime visual stream still requires a realtime media transport; GitHub comments are intentionally not used as a fake video stream.
