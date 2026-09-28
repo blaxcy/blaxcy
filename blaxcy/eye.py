@@ -9,7 +9,6 @@ from typing import Callable
 import cv2
 import mss
 import numpy as np
-import pyautogui
 
 from .protocol import event
 from .semantic import SemanticAnalyzer, SemanticConfig
@@ -56,7 +55,7 @@ class Eye:
                 frame = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 frame_hash = hashlib.blake2b(frame, digest_size=16).hexdigest()
-                cursor = pyautogui.position()
+                cursor = self._cursor()
                 cursor_state = {"x": int(cursor.x), "y": int(cursor.y)}
                 now = time.monotonic()
 
@@ -81,6 +80,11 @@ class Eye:
                 remaining = interval - (time.perf_counter() - started)
                 if remaining > 0:
                     time.sleep(remaining)
+
+    @staticmethod
+    def _cursor():
+        import pyautogui
+        return pyautogui.position()
 
     def _refresh_semantics(self, frame: np.ndarray) -> None:
         assert self._state is not None
