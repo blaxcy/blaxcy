@@ -15,7 +15,7 @@ from .transport import LocalTransport
 
 
 class Runtime:
-    def __init__(self, fps: int, ocr: bool, host: str, port: int, token: str):
+    def __init__(self, fps: int, ocr: bool, host: str, port: int, token: str, quiet: bool = False):
         self.stop_event = threading.Event()
         self.eye = Eye(EyeConfig(target_fps=fps, ocr=ocr))
         self.token = token
@@ -23,6 +23,7 @@ class Runtime:
         self.port = port
         self.latest_state: dict = {}
         self.transport: LocalTransport | None = None
+        self.quiet = quiet
 
     def stop(self, *_args) -> None:
         self.stop_event.set()
@@ -32,13 +33,14 @@ class Runtime:
             self.latest_state = message
         if self.transport is not None:
             self.transport.publish(message)
-        print(encode(message), flush=True)
+        if not self.quiet:
+            print(encode(message), flush=True)
 
 
-def run_connect(fps: int, ocr: bool, host: str, port: int, pairing_path: str) -> int:
+def run_connect(fps: int, ocr: bool, host: str, port: int, pairing_path: str, quiet: bool = False) -> int:
     pairing = create_pairing()
     save_pairing(pairing_path, pairing)
-    runtime = Runtime(fps, ocr, host, port, pairing.token)
+    runtime = Runtime(fps, ocr, host, port, pairing.token, quiet=quiet)
     signal.signal(signal.SIGINT, runtime.stop)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, runtime.stop)
@@ -87,13 +89,14 @@ def main() -> None:
     connect.add_argument("--host", default="127.0.0.1")
     connect.add_argument("--port", type=int, default=8765)
     connect.add_argument("--pairing-file", default=".blaxcy/pairing.json")
+    connect.add_argument("--quiet", action="store_true", help="suppress runtime event output")
 
     mcp = sub.add_parser("mcp", help="start the ChatGPT MCP connector")
     mcp.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
 
     args = parser.parse_args()
     if args.command == "connect":
-        raise SystemExit(run_connect(args.fps, args.ocr, args.host, args.port, args.pairing_file))
+        raise SystemExit(run_connect(args.fps, args.ocr, args.host, args.port, args.pairing_file, args.quiet))
     if args.command == "mcp":
         from .mcp_server import mcp
         mcp.run(transport=args.transport)
