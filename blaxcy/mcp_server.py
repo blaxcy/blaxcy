@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import base64
 import json
 import os
 import subprocess
@@ -106,16 +105,6 @@ async def _request(message: dict[str, Any]) -> dict[str, Any]:
         return json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
 
 
-def _image_from_state(state: dict[str, Any]) -> Image | None:
-    image = state.get("image")
-    if not isinstance(image, dict) or image.get("encoding") != "jpeg":
-        return None
-    try:
-        return Image(data=base64.b64decode(image["data"]), format="jpeg")
-    except Exception:
-        return None
-
-
 @mcp.tool()
 async def system_status() -> dict[str, Any]:
     """Return BLAXCY session status without exposing the secret control token."""
@@ -132,7 +121,7 @@ async def system_status() -> dict[str, Any]:
 
 @mcp.tool()
 async def eye_state() -> dict[str, Any]:
-    """Return the latest EYE semantic state, cursor, revision and frame hash."""
+    """Return the latest EYE semantic state, cursor, revision and optional visual keyframe."""
     return await _request({"type": "state.get"})
 
 
@@ -140,8 +129,15 @@ async def eye_state() -> dict[str, Any]:
 async def eye_snapshot() -> Image | str:
     """Return the latest EYE keyframe as an image for visual inspection."""
     result = await _request({"type": "state.get"})
-    image = _image_from_state(result.get("state", {}))
-    return image if image is not None else "No visual keyframe is currently available."
+    state = result.get("state", {})
+    image = state.get("image")
+    if not isinstance(image, dict) or image.get("encoding") != "jpeg":
+        return "No visual keyframe is currently available."
+    try:
+        import base64
+        return Image(data=base64.b64decode(image["data"]), format="jpeg")
+    except Exception:
+        return "No visual keyframe is currently available."
 
 
 @mcp.tool()
