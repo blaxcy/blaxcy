@@ -89,11 +89,11 @@ The token is never written into the repository. For a private repository, a
 fine-grained token with only the required Contents permissions is sufficient.
 GitHub's Contents API supports reading repository files and creating/updating
 files; authenticated requests have substantially higher rate limits than
-unauthenticated requests. citeturn1search1turn0search0
+unauthenticated requests.
 
 This channel is a **control/recovery plane**, not a realtime video transport.
 GitHub recommends avoiding aggressive polling; BLAXCY therefore uses conditional
-requests and a conservative default interval. citeturn0search3
+requests and a conservative default interval.
 
 Example command written by the ChatGPT/GitHub side:
 
