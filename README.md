@@ -74,7 +74,7 @@ The connector exposes:
 - `keyboard_hotkey`
 - `keyboard_type`
 
-The connector reads the fresh token from `.blaxcy/pairing.json` and authenticates to the foreground runtime. Arbitrary shell execution is not exposed.
+The connector reads the fresh token from `.blaxcy/pairing.json` and authenticates to the foreground runtime. If the runtime is not already running, the connector starts the repo's foreground runtime as its child and stops it when the connector exits. Arbitrary shell execution is not exposed.
 
 A ChatGPT deployment still has to be configured to use this MCP server. The repository contains the connector implementation and all device-side logic, but a GitHub repository alone cannot register a tool with ChatGPT or make ChatGPT reach a user's localhost process automatically. For remote ChatGPT access, use a supported authenticated MCP hosting/tunnel mechanism. Streamable HTTP should never be exposed publicly without authentication and HTTPS.
 
