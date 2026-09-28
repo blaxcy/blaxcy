@@ -9,6 +9,8 @@ import mss
 
 from .eye import Eye, EyeConfig
 from .protocol import encode, event, session_token
+from .pairing import create_pairing, save_pairing, fingerprint
+from .chatgpt import tool_manifest
 from .transport import LocalTransport
 
 
@@ -33,7 +35,9 @@ class Runtime:
         print(encode(message), flush=True)
 
 
-def run_connect(fps: int, ocr: bool, host: str, port: int) -> int:
+def run_connect(fps: int, ocr: bool, host: str, port: int, pairing_path: str) -> int:
+    pairing = create_pairing()
+    save_pairing(pairing_path, pairing)
     runtime = Runtime(fps, ocr, host, port)
     signal.signal(signal.SIGINT, runtime.stop)
     if hasattr(signal, "SIGTERM"):
@@ -60,6 +64,9 @@ def run_connect(fps: int, ocr: bool, host: str, port: int) -> int:
         capabilities=["eye", "mouse", "keyboard"],
         transport={"scheme": "ws", "host": host, "port": port},
         token=runtime.token,
+        pairing=pairing.public(),
+        token_fingerprint=fingerprint(runtime.token),
+        chatgpt=tool_manifest(),
     ))
 
     try:
@@ -79,7 +86,8 @@ def main() -> None:
     connect.add_argument("--ocr", action="store_true")
     connect.add_argument("--host", default="127.0.0.1")
     connect.add_argument("--port", type=int, default=8765)
+    connect.add_argument("--pairing-file", default=".blaxcy/pairing.json")
 
     args = parser.parse_args()
     if args.command == "connect":
-        raise SystemExit(run_connect(args.fps, args.ocr, args.host, args.port))
+        raise SystemExit(run_connect(args.fps, args.ocr, args.host, args.port, args.pairing_file))
