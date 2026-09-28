@@ -1,20 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.mcpserver import Image
 
-from .commands import CommandError, execute
-from .pairing import fingerprint
-
-mcp = FastMCP(
+mcp = MCPServer(
     "BLAXCY",
     instructions=(
         "BLAXCY controls the foreground user's own device. "
-        "Use eye_state before acting; prefer semantic element coordinates; "
+        "Use eye_state or eye_snapshot before acting; prefer semantic element coordinates; "
         "never execute arbitrary shell commands."
     ),
 )
@@ -45,10 +42,42 @@ async def _request(message: dict[str, Any]) -> dict[str, Any]:
         return json.loads(await ws.recv())
 
 
+def _image_from_state(state: dict[str, Any]) -> Image | None:
+    image = state.get("image")
+    if not isinstance(image, dict) or image.get("encoding") != "jpeg":
+        return None
+    try:
+        import base64
+        return Image(data=base64.b64decode(image["data"]), format="jpeg")
+    except Exception:
+        return None
+
+
 @mcp.tool()
 async def eye_state() -> dict[str, Any]:
-    """Return the current EYE state, including semantic elements and cursor."""
+    """Return the latest EYE semantic state, cursor, revision and frame hash."""
     return await _request({"type": "state.get"})
+
+
+@mcp.tool()
+async def eye_snapshot() -> Image | str:
+    """Return the latest EYE keyframe as an image for visual inspection."""
+    result = await _request({"type": "state.get"})
+    state = result.get("state", {})
+    image = _image_from_state(state)
+    if image is not None:
+        return image
+    return "No visual keyframe is currently available."
+
+
+@mcp.tool()
+async def eye_events(since_revision: int = 0, limit: int = 64) -> dict[str, Any]:
+    """Return EYE deltas/cursor/keyframes after a revision for incremental perception."""
+    return await _request({
+        "type": "events.get",
+        "revision": max(0, since_revision),
+        "limit": max(1, min(limit, 256)),
+    })
 
 
 @mcp.tool()
@@ -58,11 +87,20 @@ async def mouse_move(x: int, y: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def mouse_click(x: int, y: int, button: str = "left", clicks: int = 1) -> dict[str, Any]:
+async def mouse_click(
+    x: int,
+    y: int,
+    button: str = "left",
+    clicks: int = 1,
+) -> dict[str, Any]:
     """Click at screen coordinates."""
     return await _request({
-        "type": "command", "action": "mouse.click",
-        "x": x, "y": y, "button": button, "clicks": clicks,
+        "type": "command",
+        "action": "mouse.click",
+        "x": x,
+        "y": y,
+        "button": button,
+        "clicks": clicks,
     })
 
 
