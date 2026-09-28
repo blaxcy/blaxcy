@@ -6,7 +6,6 @@ import signal
 import threading
 
 import mss
-import numpy as np
 
 from .eye import Eye, EyeConfig
 from .protocol import encode, event, session_token
@@ -16,12 +15,12 @@ from .transport import LocalTransport
 class Runtime:
     def __init__(self, fps: int, ocr: bool, host: str, port: int):
         self.stop_event = threading.Event()
-        self.eye = Eye(EyeConfig(target_fps=fps))
+        self.eye = Eye(EyeConfig(target_fps=fps, ocr=ocr))
         self.token = session_token()
         self.host = host
         self.port = port
-        self.ocr = ocr
         self.latest_state: dict = {}
+        self.transport: LocalTransport | None = None
 
     def stop(self, *_args) -> None:
         self.stop_event.set()
@@ -29,6 +28,8 @@ class Runtime:
     def emit(self, message: dict) -> None:
         if message.get("type") == "eye.keyframe":
             self.latest_state = message
+        if self.transport is not None:
+            self.transport.publish(message)
         print(encode(message), flush=True)
 
 
@@ -42,17 +43,16 @@ def run_connect(fps: int, ocr: bool, host: str, port: int) -> int:
         monitor = sct.monitors[1]
         size = (int(monitor["width"]), int(monitor["height"]))
 
-    transport = LocalTransport(
-        runtime.token,
-        lambda: runtime.latest_state,
-        lambda: size,
-    )
+    runtime.transport = LocalTransport(runtime.token, lambda: runtime.latest_state, lambda: size)
 
-    thread = threading.Thread(
-        target=lambda: asyncio.run(transport.serve(host, port)),
+    server_thread = threading.Thread(
+        target=lambda: asyncio.run(runtime.transport.serve(host, port)),
         daemon=True,
+        name="blaxcy-transport",
     )
-    thread.start()
+    server_thread.start()
+    if not runtime.transport.wait_ready():
+        raise RuntimeError("transport failed to start")
 
     runtime.emit(event(
         "session.started",
