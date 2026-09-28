@@ -1,7 +1,11 @@
 {
   "mcpServers": {
     "blaxcy": {
-      "command": "blaxcy-mcp"
+      "command": "python",
+      "args": ["-m", "blaxcy.mcp_server"],
+      "env": {
+        "BLAXCY_MCP_TRANSPORT": "stdio"
+      }
     }
   }
 }
