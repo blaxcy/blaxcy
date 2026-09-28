@@ -76,13 +76,36 @@ Native accessibility APIs may require OS-level Accessibility/AT-SPI permission.
 
 ## GitHub control bridge
 
-A GitHub Issue mailbox is available for environments that can use GitHub as the control channel. The device polls structured BLAXCY_CMD comments and posts BLAXCY_RESULT comments.
+The repository also contains a GitHub-backed command mailbox:
 
-    BLAXCY_CMD {"id":"cmd-1","command":{"action":"mouse.click","x":820,"y":430}}
+    python -m blaxcy github-bridge
 
-This is a recovery/control channel, not a realtime video transport. GitHub comments are too slow and too large for high-frequency EYE media.
+The device reads `.blaxcy/command.json` from the configured repository and
+writes the acknowledgement to `.blaxcy/command_ack.json`. Commands are
+schema-validated and limited to mouse/keyboard actions.
 
-Never commit a GitHub token. For real control, use a private repository and a fine-grained token limited to the required Issues permission.
+Authentication is taken from `GITHUB_TOKEN` or, when available, `gh auth token`.
+The token is never written into the repository. For a private repository, a
+fine-grained token with only the required Contents permissions is sufficient.
+GitHub's Contents API supports reading repository files and creating/updating
+files; authenticated requests have substantially higher rate limits than
+unauthenticated requests. citeturn1search1turn0search0
+
+This channel is a **control/recovery plane**, not a realtime video transport.
+GitHub recommends avoiding aggressive polling; BLAXCY therefore uses conditional
+requests and a conservative default interval. citeturn0search3
+
+Example command written by the ChatGPT/GitHub side:
+
+    {
+      "id": "cmd-001",
+      "actor": "blaxcy",
+      "action": "mouse.click",
+      "x": 820,
+      "y": 430
+    }
+
+Then the device executes it and writes the result to the acknowledgement file.
 
 ## Security
 
