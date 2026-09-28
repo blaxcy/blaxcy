@@ -1,5 +1,7 @@
 # BLAXCY
 
+BLAXCY is a recoverable, foreground-only device-control runtime. The GitHub repository is the recovery/source-of-truth package: a new device can recreate the runtime from the repo without depending on the old device.
+
 Temporary foreground device-control runtime.
 
 ## Architecture
@@ -39,6 +41,12 @@ Optional OCR:
     python -m blaxcy connect --ocr
 
 Stop with Ctrl+C.
+
+## Pairing and connector contract
+
+Every foreground session creates a fresh device/session identity and a fresh short-lived control token. The token is stored locally in `.blaxcy/pairing.json` with restrictive permissions where the platform supports them. The repository never contains a device secret.
+
+`blaxcy.chatgpt.tool_manifest()` exposes the stable ChatGPT-facing capability contract, while `blaxcy.gateway.GatewayEnvelope` defines a transport-neutral authenticated message envelope. A connector/relay can implement this contract without changing the device runtime.
 
 ## Local transport
 
