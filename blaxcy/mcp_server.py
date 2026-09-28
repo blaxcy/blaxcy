@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import asyncio
+import atexit
 import json
 import os
+import subprocess
+import sys
+import time
 from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Image
+
+_runtime_process: subprocess.Popen | None = None
+
 
 mcp = MCPServer(
     "BLAXCY",
@@ -27,7 +35,56 @@ def _ws_url() -> str:
     return os.environ.get("BLAXCY_WS", "ws://127.0.0.1:8765")
 
 
+async def _runtime_reachable() -> bool:
+    try:
+        import websockets
+        pairing = _load_pairing()
+        async with websockets.connect(_ws_url(), open_timeout=0.5, close_timeout=0.5) as ws:
+            await ws.send(json.dumps({"type": "auth", "token": pairing["token"]}))
+            response = json.loads(await asyncio.wait_for(ws.recv(), timeout=0.8))
+            return bool(response.get("ok"))
+    except Exception:
+        return False
+
+
+async def _ensure_runtime() -> None:
+    global _runtime_process
+    if await _runtime_reachable():
+        return
+    if _runtime_process is None or _runtime_process.poll() is not None:
+        pairing_file = os.environ.get("BLAXCY_PAIRING_FILE", ".blaxcy/pairing.json")
+        _runtime_process = subprocess.Popen(
+            [
+                sys.executable, "-m", "blaxcy", "connect",
+                "--quiet", "--pairing-file", pairing_file,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        if await _runtime_reachable():
+            return
+        await asyncio.sleep(0.2)
+    raise RuntimeError("BLAXCY foreground runtime did not become reachable")
+
+
+def _stop_runtime() -> None:
+    global _runtime_process
+    if _runtime_process is not None and _runtime_process.poll() is None:
+        _runtime_process.terminate()
+        try:
+            _runtime_process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _runtime_process.kill()
+
+
+atexit.register(_stop_runtime)
+
+
 async def _request(message: dict[str, Any]) -> dict[str, Any]:
+    await _ensure_runtime()
     import websockets
 
     pairing = _load_pairing()
