@@ -1,131 +1,104 @@
 from __future__ import annotations
 
+"""GitHub-file control bridge.
+
+The device publishes a machine-readable snapshot to a repository file and
+polls a command file for instructions. This is intentionally explicit:
+commands are schema-validated, bounded, authenticated by a per-install secret,
+and acknowledged in the state file.
+"""
+
+import hashlib
 import json
 import os
 import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any
 
-API = "https://api.github.com"
+from .commands import CommandError, execute
 
+STATE_PATH = Path(os.getenv("BLAXCY_STATE_FILE", ".blaxcy/screen_state.json"))
+COMMAND_PATH = Path(os.getenv("BLAXCY_COMMAND_FILE", ".blaxcy/command.json"))
+ACK_PATH = Path(os.getenv("BLAXCY_ACK_FILE", ".blaxcy/command_ack.json"))
+SECRET_PATH = Path(os.getenv("BLAXCY_SECRET_FILE", ".blaxcy/device_secret"))
 
-class GitHubBridgeError(RuntimeError):
-    pass
-
-
-@dataclass(frozen=True)
-class GitHubBridgeConfig:
-    repository: str
-    issue_number: int
-    token: str
-    allowed_actor: str
-    poll_seconds: float = 1.5
+MAX_TEXT = 4000
 
 
-class GitHubBridge:
-    """GitHub Issues-comment mailbox for a foreground BLAXCY session."""
-    def __init__(self, config: GitHubBridgeConfig,
-                 execute_command: Callable[[dict[str, Any]], dict[str, Any]],
-                 state_provider: Callable[[], dict[str, Any]]):
-        self.config = config
-        self.execute_command = execute_command
-        self.state_provider = state_provider
-        self._last_comment_id = 0
-
-    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
-        headers = {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.config.token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "blaxcy-github-bridge",
-        }
-        data = None
-        if body is not None:
-            data = json.dumps(body, separators=(",", ":")).encode()
-            headers["Content-Type"] = "application/json"
-        req = urllib.request.Request(API + path, data=data, headers=headers, method=method)
+def _secret() -> str:
+    SECRET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if not SECRET_PATH.exists():
+        import secrets
+        SECRET_PATH.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         try:
-            with urllib.request.urlopen(req, timeout=20) as response:
-                raw = response.read()
-                return json.loads(raw.decode()) if raw else None
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace")
-            raise GitHubBridgeError(f"GitHub API {exc.code}: {detail[:500]}") from exc
-        except urllib.error.URLError as exc:
-            raise GitHubBridgeError(f"GitHub network error: {exc}") from exc
-
-    def _comments(self) -> list[dict[str, Any]]:
-        return self._request(
-            "GET",
-            f"/repos/{self.config.repository}/issues/{self.config.issue_number}/comments"
-            "?per_page=100&sort=created&direction=asc",
-        )
-
-    def _post(self, body: str) -> None:
-        self._request(
-            "POST",
-            f"/repos/{self.config.repository}/issues/{self.config.issue_number}/comments",
-            {"body": body},
-        )
-
-    def initialize(self) -> None:
-        comments = self._comments()
-        self._last_comment_id = max((int(c["id"]) for c in comments), default=0)
-        self._post("BLAXCY_SESSION " + json.dumps({
-            "status": "connected",
-            "capabilities": ["eye", "mouse", "keyboard"],
-            "state": self.state_provider(),
-        }, separators=(",", ":")))
-
-    def poll_once(self) -> None:
-        for comment in self._comments():
-            comment_id = int(comment["id"])
-            if comment_id <= self._last_comment_id:
-                continue
-            self._last_comment_id = max(self._last_comment_id, comment_id)
-
-            actor = ((comment.get("user") or {}).get("login") or "").lower()
-            if actor != self.config.allowed_actor.lower():
-                continue
-
-            body = comment.get("body") or ""
-            if not body.startswith("BLAXCY_CMD "):
-                continue
-
-            payload: dict[str, Any] = {}
-            try:
-                payload = json.loads(body[len("BLAXCY_CMD "):])
-                command_id = str(payload["id"])
-                command = payload["command"]
-                if not isinstance(command, dict):
-                    raise ValueError("command must be an object")
-                result = self.execute_command(command)
-                response = {"id": command_id, "ok": True, "result": result}
-            except Exception as exc:
-                response = {"id": str(payload.get("id", "unknown")), "ok": False, "error": str(exc)}
-
-            self._post("BLAXCY_RESULT " + json.dumps(response, separators=(",", ":")))
-
-    def run(self, stop: Callable[[], bool]) -> None:
-        self.initialize()
-        while not stop():
-            try:
-                self.poll_once()
-            except GitHubBridgeError as exc:
-                print(f"[blaxcy] GitHub bridge: {exc}", flush=True)
-            time.sleep(max(0.5, self.config.poll_seconds))
+            SECRET_PATH.chmod(0o600)
+        except OSError:
+            pass
+    return SECRET_PATH.read_text(encoding="utf-8").strip()
 
 
-def config_from_env() -> GitHubBridgeConfig:
-    repository = os.environ.get("BLAXCY_GITHUB_REPOSITORY", "blaxcy/blaxcy")
-    issue = os.environ.get("BLAXCY_GITHUB_ISSUE")
-    token = os.environ.get("BLAXCY_GITHUB_TOKEN")
-    actor = os.environ.get("BLAXCY_GITHUB_ALLOWED_ACTOR", "blaxcy")
-    if not issue or not issue.isdigit():
-        raise GitHubBridgeError("BLAXCY_GITHUB_ISSUE must be set to an issue number")
-    if not token:
-        raise GitHubBridgeError("BLAXCY_GITHUB_TOKEN must be set; never commit it")
-    return GitHubBridgeConfig(repository, int(issue), token, actor,
-                              float(os.environ.get("BLAXCY_GITHUB_POLL_SECONDS", "1.5")))
+def command_signature(command: dict[str, Any]) -> str:
+    raw = json.dumps(command, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256((_secret() + raw).encode()).hexdigest()
+
+
+def write_state(state: dict[str, Any]) -> None:
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(STATE_PATH)
+
+
+def read_command() -> dict[str, Any] | None:
+    if not COMMAND_PATH.exists():
+        return None
+    try:
+        obj = json.loads(COMMAND_PATH.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def acknowledge(command_id: str, ok: bool, result: Any = None, error: str | None = None) -> None:
+    ACK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "protocol": "blaxcy/github-bridge/0.1",
+        "command_id": command_id,
+        "ok": ok,
+        "ts_ns": time.time_ns(),
+    }
+    if ok:
+        payload["result"] = result
+    else:
+        payload["error"] = error
+    ACK_PATH.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+
+
+def validate(command: dict[str, Any]) -> None:
+    if command.get("signature") != command_signature({k: v for k, v in command.items() if k != "signature"}):
+        raise CommandError("invalid command signature")
+    if not isinstance(command.get("id"), str) or len(command["id"]) > 128:
+        raise CommandError("invalid command id")
+    if command.get("action") not in {
+        "mouse.move", "mouse.click", "mouse.scroll",
+        "keyboard.press", "keyboard.hotkey", "keyboard.type",
+    }:
+        raise CommandError("unsupported action")
+    if command.get("action") == "keyboard.type" and len(str(command.get("text", ""))) > MAX_TEXT:
+        raise CommandError("text payload too large")
+
+
+def process_once(screen_width: int, screen_height: int, last_id: str | None) -> str | None:
+    command = read_command()
+    if not command:
+        return last_id
+    cid = str(command.get("id", ""))
+    if not cid or cid == last_id:
+        return last_id
+    try:
+        validate(command)
+        result = execute(command, screen_width, screen_height)
+        acknowledge(cid, True, result=result)
+    except (CommandError, ValueError) as exc:
+        acknowledge(cid, False, error=str(exc))
+    return cid
