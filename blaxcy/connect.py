@@ -53,8 +53,13 @@ class Runtime:
         self.stop_event.set()
 
     def emit(self, message: dict) -> None:
-        if message.get("type") in {"eye.keyframe", "eye.delta", "eye.cursor"}:
+        if message.get("type") == "eye.keyframe":
+            # latest_state must remain a complete state. Deltas are retained
+            # separately so MCP eye_state never accidentally returns a patch.
             self.latest_state = message
+            self.events.append(message)
+            self.events = self.events[-512:]
+        elif message.get("type") in {"eye.delta", "eye.cursor"}:
             self.events.append(message)
             self.events = self.events[-512:]
         if self.transport is not None:
