@@ -9,6 +9,8 @@ import sys
 import time
 from typing import Any
 
+from .leader import Leader
+
 from mcp.server.fastmcp import FastMCP, Image
 
 _runtime_process: subprocess.Popen | None = None
@@ -138,6 +140,19 @@ async def eye_snapshot() -> Image | str:
         return Image(data=base64.b64decode(image["data"]), format="jpeg")
     except Exception:
         return "No visual keyframe is currently available."
+
+
+@mcp.tool()
+async def leader_command(command: str) -> dict[str, Any]:
+    """Execute a compact state-aware command such as `click Submit`, `press enter`, or `type hello`."""
+    state_result = await _request({"type": "state.get"})
+    state = state_result.get("state", {})
+    screen = state.get("screen", {})
+    width = int(screen.get("width", 0))
+    height = int(screen.get("height", 0))
+    if width <= 0 or height <= 0:
+        raise RuntimeError("EYE screen state is unavailable")
+    return Leader(lambda: state).execute(command, width, height)
 
 
 @mcp.tool()
