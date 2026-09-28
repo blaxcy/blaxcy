@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import base64
 import json
 import os
 import subprocess
@@ -9,18 +10,17 @@ import sys
 import time
 from typing import Any
 
-from mcp.server import MCPServer
-from mcp.server.mcpserver import Image
+from mcp.server.fastmcp import FastMCP, Image
 
 _runtime_process: subprocess.Popen | None = None
 
-mcp = MCPServer(
+mcp = FastMCP(
     "BLAXCY",
     instructions=(
         "BLAXCY controls the foreground user's own device. "
         "Read eye_state or eye_snapshot before acting. "
         "Prefer semantic element coordinates. "
-        "Only use the structured mouse/keyboard tools; arbitrary shell execution is unavailable."
+        "Only use structured mouse/keyboard tools; arbitrary shell execution is unavailable."
     ),
 )
 
@@ -59,7 +59,6 @@ async def _ensure_runtime() -> None:
     global _runtime_process
     if await _runtime_reachable():
         return
-
     if _runtime_process is None or _runtime_process.poll() is not None:
         _runtime_process = subprocess.Popen(
             [
@@ -70,7 +69,6 @@ async def _ensure_runtime() -> None:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-
     deadline = time.monotonic() + 12.0
     while time.monotonic() < deadline:
         if await _runtime_reachable():
@@ -95,7 +93,6 @@ atexit.register(_stop_runtime)
 async def _request(message: dict[str, Any]) -> dict[str, Any]:
     await _ensure_runtime()
     import websockets
-
     pairing = _load_pairing()
     async with websockets.connect(
         _ws_url(), max_size=8 * 1024 * 1024, open_timeout=2.0, close_timeout=1.0
@@ -104,7 +101,7 @@ async def _request(message: dict[str, Any]) -> dict[str, Any]:
         auth = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
         if not auth.get("ok"):
             raise RuntimeError("BLAXCY authentication failed")
-        await ws.recv()  # initial state
+        await ws.recv()
         await ws.send(json.dumps(message))
         return json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
 
@@ -114,7 +111,6 @@ def _image_from_state(state: dict[str, Any]) -> Image | None:
     if not isinstance(image, dict) or image.get("encoding") != "jpeg":
         return None
     try:
-        import base64
         return Image(data=base64.b64decode(image["data"]), format="jpeg")
     except Exception:
         return None
@@ -202,9 +198,6 @@ def main() -> None:
     if transport == "streamable-http":
         host = os.environ.get("BLAXCY_MCP_HOST", "127.0.0.1")
         port = int(os.environ.get("BLAXCY_MCP_PORT", "8787"))
-        # The SDK provides the standard Streamable HTTP endpoint at /mcp.
-        # Keep it loopback by default; use Secure MCP Tunnel or an authenticated
-        # HTTPS deployment for remote ChatGPT access.
         mcp.run(
             transport="streamable-http",
             host=host,
