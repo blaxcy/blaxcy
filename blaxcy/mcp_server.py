@@ -14,21 +14,27 @@ from mcp.server.mcpserver import Image
 
 _runtime_process: subprocess.Popen | None = None
 
-
 mcp = MCPServer(
     "BLAXCY",
     instructions=(
         "BLAXCY controls the foreground user's own device. "
-        "Use eye_state or eye_snapshot before acting; prefer semantic element coordinates; "
-        "never execute arbitrary shell commands."
+        "Read eye_state or eye_snapshot before acting. "
+        "Prefer semantic element coordinates. "
+        "Only use the structured mouse/keyboard tools; arbitrary shell execution is unavailable."
     ),
 )
 
 
+def _pairing_path() -> str:
+    return os.environ.get("BLAXCY_PAIRING_FILE", ".blaxcy/pairing.json")
+
+
 def _load_pairing() -> dict[str, Any]:
-    path = os.environ.get("BLAXCY_PAIRING_FILE", ".blaxcy/pairing.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(_pairing_path(), "r", encoding="utf-8") as f:
+        value = json.load(f)
+    if not isinstance(value, dict) or not value.get("token"):
+        raise RuntimeError("invalid BLAXCY pairing file")
+    return value
 
 
 def _ws_url() -> str:
@@ -39,7 +45,9 @@ async def _runtime_reachable() -> bool:
     try:
         import websockets
         pairing = _load_pairing()
-        async with websockets.connect(_ws_url(), open_timeout=0.5, close_timeout=0.5) as ws:
+        async with websockets.connect(
+            _ws_url(), open_timeout=0.5, close_timeout=0.5, max_size=8 * 1024 * 1024
+        ) as ws:
             await ws.send(json.dumps({"type": "auth", "token": pairing["token"]}))
             response = json.loads(await asyncio.wait_for(ws.recv(), timeout=0.8))
             return bool(response.get("ok"))
@@ -51,23 +59,24 @@ async def _ensure_runtime() -> None:
     global _runtime_process
     if await _runtime_reachable():
         return
+
     if _runtime_process is None or _runtime_process.poll() is not None:
-        pairing_file = os.environ.get("BLAXCY_PAIRING_FILE", ".blaxcy/pairing.json")
         _runtime_process = subprocess.Popen(
             [
                 sys.executable, "-m", "blaxcy", "connect",
-                "--quiet", "--pairing-file", pairing_file,
+                "--quiet", "--pairing-file", _pairing_path(),
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-    deadline = time.monotonic() + 10.0
+
+    deadline = time.monotonic() + 12.0
     while time.monotonic() < deadline:
         if await _runtime_reachable():
             return
         await asyncio.sleep(0.2)
-    raise RuntimeError("BLAXCY foreground runtime did not become reachable")
+    raise RuntimeError("BLAXCY runtime did not become reachable")
 
 
 def _stop_runtime() -> None:
@@ -88,15 +97,16 @@ async def _request(message: dict[str, Any]) -> dict[str, Any]:
     import websockets
 
     pairing = _load_pairing()
-    token = pairing["token"]
-    async with websockets.connect(_ws_url(), max_size=8 * 1024 * 1024) as ws:
-        await ws.send(json.dumps({"type": "auth", "token": token}))
-        auth = json.loads(await ws.recv())
+    async with websockets.connect(
+        _ws_url(), max_size=8 * 1024 * 1024, open_timeout=2.0, close_timeout=1.0
+    ) as ws:
+        await ws.send(json.dumps({"type": "auth", "token": pairing["token"]}))
+        auth = json.loads(await asyncio.wait_for(ws.recv(), timeout=2.0))
         if not auth.get("ok"):
             raise RuntimeError("BLAXCY authentication failed")
         await ws.recv()  # initial state
         await ws.send(json.dumps(message))
-        return json.loads(await ws.recv())
+        return json.loads(await asyncio.wait_for(ws.recv(), timeout=10.0))
 
 
 def _image_from_state(state: dict[str, Any]) -> Image | None:
@@ -111,6 +121,20 @@ def _image_from_state(state: dict[str, Any]) -> Image | None:
 
 
 @mcp.tool()
+async def system_status() -> dict[str, Any]:
+    """Return BLAXCY session status without exposing the secret control token."""
+    await _ensure_runtime()
+    pairing = _load_pairing()
+    return {
+        "ok": True,
+        "device_id": pairing.get("device_id"),
+        "session_id": pairing.get("session_id"),
+        "transport": _ws_url(),
+        "capabilities": ["eye", "mouse", "keyboard"],
+    }
+
+
+@mcp.tool()
 async def eye_state() -> dict[str, Any]:
     """Return the latest EYE semantic state, cursor, revision and frame hash."""
     return await _request({"type": "state.get"})
@@ -120,20 +144,17 @@ async def eye_state() -> dict[str, Any]:
 async def eye_snapshot() -> Image | str:
     """Return the latest EYE keyframe as an image for visual inspection."""
     result = await _request({"type": "state.get"})
-    state = result.get("state", {})
-    image = _image_from_state(state)
-    if image is not None:
-        return image
-    return "No visual keyframe is currently available."
+    image = _image_from_state(result.get("state", {}))
+    return image if image is not None else "No visual keyframe is currently available."
 
 
 @mcp.tool()
 async def eye_events(since_revision: int = 0, limit: int = 64) -> dict[str, Any]:
-    """Return EYE deltas/cursor/keyframes after a revision for incremental perception."""
+    """Return EYE keyframes, visual deltas and cursor updates after a revision."""
     return await _request({
         "type": "events.get",
         "revision": max(0, since_revision),
-        "limit": max(1, min(limit, 256)),
+        "limit": max(1, min(int(limit), 256)),
     })
 
 
@@ -144,26 +165,17 @@ async def mouse_move(x: int, y: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def mouse_click(
-    x: int,
-    y: int,
-    button: str = "left",
-    clicks: int = 1,
-) -> dict[str, Any]:
+async def mouse_click(x: int, y: int, button: str = "left", clicks: int = 1) -> dict[str, Any]:
     """Click at screen coordinates."""
     return await _request({
-        "type": "command",
-        "action": "mouse.click",
-        "x": x,
-        "y": y,
-        "button": button,
-        "clicks": clicks,
+        "type": "command", "action": "mouse.click",
+        "x": x, "y": y, "button": button, "clicks": clicks,
     })
 
 
 @mcp.tool()
 async def mouse_scroll(amount: int) -> dict[str, Any]:
-    """Scroll the foreground device."""
+    """Scroll at the current cursor position."""
     return await _request({"type": "command", "action": "mouse.scroll", "amount": amount})
 
 
@@ -188,7 +200,17 @@ async def keyboard_type(text: str) -> dict[str, Any]:
 def main() -> None:
     transport = os.environ.get("BLAXCY_MCP_TRANSPORT", "stdio")
     if transport == "streamable-http":
-        mcp.run(transport="streamable-http")
+        host = os.environ.get("BLAXCY_MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("BLAXCY_MCP_PORT", "8787"))
+        # The SDK provides the standard Streamable HTTP endpoint at /mcp.
+        # Keep it loopback by default; use Secure MCP Tunnel or an authenticated
+        # HTTPS deployment for remote ChatGPT access.
+        mcp.run(
+            transport="streamable-http",
+            host=host,
+            port=port,
+            streamable_http_path="/mcp",
+        )
     else:
         mcp.run(transport="stdio")
 
