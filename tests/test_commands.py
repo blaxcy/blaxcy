@@ -21,3 +21,14 @@ def test_coordinates_are_bounded():
         pass
     else:
         raise AssertionError("out-of-bounds command accepted")
+
+
+def test_scroll_can_use_current_cursor():
+    with patch("blaxcy.commands.scroll") as scroll:
+        result = execute(
+            {"type": "command", "action": "mouse.scroll", "amount": 3},
+            100,
+            100,
+        )
+        scroll.assert_called_once_with(None, None, 3)
+        assert result["ok"] is True
