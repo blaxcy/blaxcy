@@ -1,6 +1,6 @@
 # BLAXCY
 
-BLAXCY is a recoverable, foreground-only device-control runtime. The GitHub repository is the source-of-truth and recovery point: a new device recreates the runtime from the repo without depending on the old device.
+BLAXCY is a recoverable, foreground-only device-control runtime. The GitHub repository is the source-of-truth and recovery point: a new device can recreate the software from the repo without depending on the old device.
 
 ## Architecture
 
@@ -10,47 +10,36 @@ BLAXCY is a recoverable, foreground-only device-control runtime. The GitHub repo
         ↓
     foreground BLAXCY runtime
         ├── EYE
-        │    ├── continuous capture
+        │    ├── continuous screen capture
         │    ├── pixel/change detection
         │    ├── changed-region JPEGs
         │    ├── full visual keyframes
         │    ├── frame hashes
-        │    ├── accessibility/UI semantics
+        │    ├── native accessibility/UI semantics
         │    └── optional OCR
         ├── MOUSE
         ├── KEYBOARD
-        └── authenticated local WebSocket
+        └── authenticated loopback transport
                  ↓
           repo-provided MCP connector
                  ↓
-              ChatGPT
+              ChatGPT / MCP host
 
-There is no permanent background agent. The device is controllable only while the foreground session is running.
+There is no permanent background agent. Device control exists only while the foreground runtime is running.
 
-## One-command setup
+## One-command recovery
 
     git clone https://github.com/blaxcy/blaxcy.git
     cd blaxcy
     python scripts/bootstrap.py
 
-The bootstrap creates `.venv`, installs the repo, creates a fresh pairing credential, and starts the foreground runtime.
+The bootstrap creates the virtual environment, installs the repository and starts a fresh foreground session. Session credentials are generated locally and are ignored by Git.
 
-Optional OCR:
+The repository is the recovery point: losing the old device does not remove the source code or setup logic.
 
-    python -m pip install -e '.[ocr]'
-    python -m blaxcy connect --ocr
+## ChatGPT / MCP connector
 
-Platform accessibility support:
-
-    Windows:  python -m pip install -e '.[windows]'
-    Linux:    python -m pip install -e '.[linux]'
-    macOS:    python -m pip install -e '.[macos]'
-
-Native accessibility may additionally require OS permission/configuration. If it is unavailable, EYE falls back to pixel perception and optional OCR.
-
-## ChatGPT connector
-
-The repo contains an MCP server:
+BLAXCY includes an MCP server:
 
     python -m blaxcy mcp
 
@@ -58,15 +47,18 @@ or:
 
     blaxcy-mcp
 
-The default transport is stdio, intended for an MCP host that launches the connector locally. Streamable HTTP is also available:
+Default transport is stdio. This is intended for an MCP host that launches the connector as a local subprocess.
+
+For a remotely reachable MCP endpoint:
 
     python -m blaxcy mcp --transport streamable-http
 
-The connector exposes:
+The MCP server exposes:
 
-- `eye_state` — semantic state, cursor, revision and frame hash
-- `eye_snapshot` — current visual keyframe as MCP image content
-- `eye_events` — incremental EYE keyframes/deltas/cursor updates after a revision
+- `system_status`
+- `eye_state`
+- `eye_snapshot`
+- `eye_events`
 - `mouse_move`
 - `mouse_click`
 - `mouse_scroll`
@@ -74,60 +66,70 @@ The connector exposes:
 - `keyboard_hotkey`
 - `keyboard_type`
 
-The connector reads the fresh token from `.blaxcy/pairing.json` and authenticates to the foreground runtime. If the runtime is not already running, the connector starts the repo's foreground runtime as its child and stops it when the connector exits. Arbitrary shell execution is not exposed.
+The connector automatically starts the foreground BLAXCY runtime if one is not already reachable. It authenticates to that runtime using the fresh local pairing token. The secret token is never returned by the MCP tools and is never committed to GitHub.
 
-A ChatGPT deployment still has to be configured to use this MCP server. The repository contains the connector implementation and all device-side logic, but a GitHub repository alone cannot register a tool with ChatGPT or make ChatGPT reach a user's localhost process automatically. For remote ChatGPT access, use a supported authenticated MCP hosting/tunnel mechanism. Streamable HTTP should never be exposed publicly without authentication and HTTPS.
+The current MCP implementation is a complete repository-side connector. **ChatGPT itself still needs to be configured to use the MCP server.** ChatGPT connects to remote MCP servers; it cannot directly reach a local MCP server. OpenAI documents Secure MCP Tunnel for connecting a local/private MCP server without exposing it publicly. Custom MCP apps are configured with an endpoint and authentication in supported ChatGPT developer-mode/app environments. 
+
+For remote HTTP, keep the server behind HTTPS and an authenticated tunnel/deployment. The repository defaults to loopback and does not expose the device to the public internet.
 
 ## EYE
 
-EYE continuously captures the primary display and compares consecutive frames. Normal changes send only dirty regions encoded as JPEG crops. Large changes trigger a full keyframe. Periodic resyncs rebuild semantic state and include a frame hash.
+EYE continuously captures the primary display. It compares consecutive frames locally and normally sends only changed regions. Changed regions are JPEG crops; large changes trigger a complete visual keyframe.
 
-Each visual update carries revision information so an MCP client can poll `eye_events` incrementally instead of requesting a full screen every time.
+Every update carries a monotonic revision and frame hash. The connector can request only events after a known revision, so the model does not need a full screenshot on every update.
 
-Semantic perception combines:
+The semantic layer combines:
 
-- native OS accessibility/UI trees where available
-- OCR when enabled
-- screen geometry
-- pixel evidence
+- Windows UI Automation when `pywinauto` is installed
+- Linux AT-SPI when `pyatspi` is installed and available
+- macOS accessibility hook when a platform adapter is available
+- OCR when `pytesseract` is installed
+- pixel geometry and visual evidence
 - stable semantic element IDs
+- actionable-element metadata
 
-Native adapters:
+Native accessibility is best-effort because each operating system can require user permissions and platform-specific runtime components. If native accessibility is unavailable, EYE continues using pixels and optional OCR.
 
-- Windows UI Automation via pywinauto
-- Linux AT-SPI via pyatspi
-- macOS Accessibility via PyObjC/Quartz
-
-If native accessibility is unavailable or permission is denied, EYE continues with pixels/OCR.
-
-The 1–5 ms change-detection target is a performance target, not a guarantee. Capture latency is constrained by display refresh rate, OS capture APIs, hardware, resolution, and system load. A 60 Hz display cannot provide genuinely new visual information every 1–5 ms.
+The 1–5 ms change-detection number is a local processing target, not a guaranteed end-to-end visual latency. Display refresh rate, capture APIs, hardware, resolution and OS scheduling limit the actual rate of new information.
 
 ## Pairing and recovery
 
-Every foreground session creates a fresh device/session identity and control token. The token is stored locally in `.blaxcy/pairing.json`; it is never committed to GitHub.
+Every foreground session creates:
 
-Losing the old device does not lose the system:
+- a fresh device ID
+- a fresh session ID
+- a fresh random control token
 
-    clone repository
-    run bootstrap
-    fresh session credential is generated
+The token is stored only in `.blaxcy/pairing.json`, which is ignored by Git.
 
-No permanent device agent is required.
+The old device can therefore disappear without taking the system with it:
 
-## Local transport
+    new device
+      ↓
+    clone repo
+      ↓
+    bootstrap
+      ↓
+    fresh credentials
+      ↓
+    fresh BLAXCY session
 
-The foreground process opens:
+## Local control protocol
+
+The runtime listens on:
 
     ws://127.0.0.1:8765
 
-Authentication requires a fresh per-session token. The transport supports:
+Authentication is required before any state or command operation.
 
-- authenticated state retrieval
-- incremental EYE event replay
-- live EYE broadcasts
-- structured mouse/keyboard commands
+Supported protocol operations include:
 
-The default binding is loopback. Do not expose it publicly.
+    {"type":"state.get"}
+    {"type":"events.get","revision":123}
+    {"type":"command","action":"mouse.click","x":820,"y":430}
+    {"type":"command","action":"keyboard.type","text":"hello"}
+
+No arbitrary shell execution is exposed.
 
 ## Security
 
@@ -135,8 +137,31 @@ The default binding is loopback. Do not expose it publicly.
 - fresh per-session token
 - token never committed to GitHub
 - constant-time token comparison
-- bounded structured commands
+- bounded mouse/keyboard commands
 - no arbitrary shell execution
 - loopback by default
-- explicit MCP/tunnel configuration for remote ChatGPT access
-- Ctrl+C stops the session
+- remote MCP only through explicit authenticated deployment/tunnel
+- Ctrl+C stops the runtime
+
+## Platform notes
+
+Windows:
+
+    python -m pip install -e '.[windows]'
+
+Linux:
+
+    python -m pip install -e '.[linux]'
+
+macOS:
+
+    python -m pip install -e '.[macos]'
+
+Native accessibility permissions may still need to be granted in the operating system.
+
+## Development
+
+    python -m pip install -e .
+    python -m pytest -q
+
+GitHub Actions runs the test suite on pushes and pull requests.
