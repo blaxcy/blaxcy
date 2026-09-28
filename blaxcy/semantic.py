@@ -6,68 +6,84 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .accessibility import AccessibilityProvider
+
 
 @dataclass
 class SemanticConfig:
     ocr: bool = False
+    accessibility: bool = True
     max_elements: int = 500
 
 
 class SemanticAnalyzer:
-    """Best-effort UI perception layer.
-
-    It combines OCR (when enabled/installed) with simple visual geometry.
-    Platform accessibility adapters can replace/augment this analyzer later.
-    """
+    """Multi-source semantic perception: native UI tree + OCR + pixels."""
 
     def __init__(self, config: SemanticConfig | None = None):
         self.config = config or SemanticConfig()
+        self.accessibility = AccessibilityProvider()
 
     def analyze(self, frame_bgr: np.ndarray) -> list[dict[str, Any]]:
-        h, w = frame_bgr.shape[:2]
         elements: list[dict[str, Any]] = []
-
+        if self.config.accessibility:
+            elements.extend(self.accessibility.snapshot())
         if self.config.ocr:
             elements.extend(self._ocr(frame_bgr))
 
-        # Keep deterministic IDs for the same ordered observation.
-        for i, element in enumerate(elements[: self.config.max_elements], 1):
+        normalized: list[dict[str, Any]] = []
+        seen: set[tuple[str, int, int, int, int, str]] = set()
+        for element in elements:
+            x = int(element.get("x", 0))
+            y = int(element.get("y", 0))
+            w = max(0, int(element.get("width", 0)))
+            h = max(0, int(element.get("height", 0)))
+            key = (
+                str(element.get("type", "")), x, y, w, h,
+                str(element.get("name", element.get("text", ""))),
+            )
+            if w <= 0 or h <= 0 or key in seen:
+                continue
+            seen.add(key)
+            normalized.append({
+                **element,
+                "x": x, "y": y, "width": w, "height": h,
+            })
+
+        for i, element in enumerate(normalized[: self.config.max_elements], 1):
             element["id"] = f"e{i}"
             element["screen"] = {
                 "x": element["x"], "y": element["y"],
                 "width": element["width"], "height": element["height"],
             }
-
-        return elements
+        return normalized
 
     def _ocr(self, frame_bgr: np.ndarray) -> list[dict[str, Any]]:
         try:
             import pytesseract
         except ImportError:
             return []
-
         data = pytesseract.image_to_data(
             cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB),
             output_type=pytesseract.Output.DICT,
             config="--psm 6",
         )
         result: list[dict[str, Any]] = []
-        n = len(data.get("text", []))
-        for i in range(n):
-            text = str(data["text"][i]).strip()
+        for i, text in enumerate(data.get("text", [])):
+            value = str(text).strip()
             try:
                 conf = float(data["conf"][i])
             except (TypeError, ValueError):
                 conf = -1
-            if not text or conf < 20:
+            if not value or conf < 20:
                 continue
-            x, y = int(data["left"][i]), int(data["top"][i])
-            w, h = int(data["width"][i]), int(data["height"][i])
             result.append({
                 "type": "text",
-                "text": text,
+                "text": value,
                 "confidence": round(conf / 100.0, 3),
-                "x": x, "y": y, "width": w, "height": h,
+                "x": int(data["left"][i]),
+                "y": int(data["top"][i]),
+                "width": int(data["width"][i]),
+                "height": int(data["height"][i]),
                 "actionable": False,
             })
         return result
