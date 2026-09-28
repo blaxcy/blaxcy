@@ -1,90 +1,70 @@
 from __future__ import annotations
 
-import re
 from typing import Any
 
 
 def snapshot() -> list[dict[str, Any]]:
-    """Best-effort macOS Accessibility API adapter.
+    """Best-effort macOS AX snapshot.
 
-    Requires PyObjC and Accessibility permission. Position/size values are
-    parsed without calling AXValueGetValue because some PyObjC versions have
-    unsafe edge cases around that low-level out-parameter API.
+    Uses Quartz accessibility APIs when available. macOS may require the
+    terminal/Python process to be granted Accessibility permission.
     """
     try:
         import Quartz
     except ImportError:
         return []
 
+    app = Quartz.AXUIElementCreateSystemWide()
     result: list[dict[str, Any]] = []
-    try:
-        system = Quartz.AXUIElementCreateSystemWide()
-        err, focused = Quartz.AXUIElementCopyAttributeValue(
-            system, Quartz.kAXFocusedApplicationAttribute, None
-        )
-        if err != Quartz.kAXErrorSuccess or focused is None:
-            return result
-    except Exception:
-        return result
-
-    def attr(element: Any, key: str) -> Any:
-        try:
-            err, value = Quartz.AXUIElementCopyAttributeValue(element, key, None)
-            return value if err == Quartz.kAXErrorSuccess else None
-        except Exception:
-            return None
-
-    def point(value: Any) -> tuple[float, float] | None:
-        if value is None:
-            return None
-        try:
-            x, y = float(value.x), float(value.y)
-            return x, y
-        except Exception:
-            pass
-        match = re.search(r"x[:=]\s*([-+]?\d+(?:\.\d+)?).*?y[:=]\s*([-+]?\d+(?:\.\d+)?)", str(value), re.I)
-        return (float(match.group(1)), float(match.group(2))) if match else None
-
-    def size(value: Any) -> tuple[float, float] | None:
-        if value is None:
-            return None
-        try:
-            return float(value.width), float(value.height)
-        except Exception:
-            pass
-        match = re.search(r"w(?:idth)?[:=]\s*([-+]?\d+(?:\.\d+)?).*?h(?:eight)?[:=]\s*([-+]?\d+(?:\.\d+)?)", str(value), re.I)
-        return (float(match.group(1)), float(match.group(2))) if match else None
-
-    def walk(element: Any, depth: int = 0) -> None:
-        if depth > 16 or len(result) >= 500:
-            return
-
-        role = attr(element, Quartz.kAXRoleAttribute)
-        title = attr(element, Quartz.kAXTitleAttribute) or attr(
-            element, Quartz.kAXDescriptionAttribute
-        )
-        pos = point(attr(element, Quartz.kAXPositionAttribute))
-        extent = size(attr(element, Quartz.kAXSizeAttribute))
-
-        if role and pos and extent and extent[0] > 0 and extent[1] > 0:
-            role_name = str(role)
-            result.append({
-                "type": "accessibility",
-                "role": role_name,
-                "name": str(title or ""),
-                "x": int(pos[0]),
-                "y": int(pos[1]),
-                "width": int(extent[0]),
-                "height": int(extent[1]),
-                "actionable": role_name.lower() in {
-                    "axbutton", "axcheckbox", "axtextfield", "axcombobox",
-                    "axlink", "axmenuitem", "axtab", "axradiobutton",
-                },
-            })
-
-        children = attr(element, Quartz.kAXChildrenAttribute) or []
-        for child in list(children)[:500]:
-            walk(child, depth + 1)
-
-    walk(focused)
+    _walk(Quartz, app, result, 0)
     return result
+
+
+def _value(Quartz: Any, element: Any, attribute: str) -> Any:
+    try:
+        status, value = Quartz.AXUIElementCopyAttributeValue(element, attribute, None)
+        if status == Quartz.kAXErrorSuccess:
+            return value
+    except Exception:
+        pass
+    return None
+
+
+def _walk(Quartz: Any, element: Any, out: list[dict[str, Any]], depth: int) -> None:
+    if depth > 14 or len(out) >= 500:
+        return
+
+    role = _value(Quartz, element, "AXRole") or "unknown"
+    title = _value(Quartz, element, "AXTitle") or _value(Quartz, element, "AXDescription") or ""
+    position = _value(Quartz, element, "AXPosition")
+    size = _value(Quartz, element, "AXSize")
+
+    try:
+        x, y = int(position.x), int(position.y)
+        w, h = int(size.width), int(size.height)
+    except Exception:
+        x = y = w = h = 0
+
+    actionable_roles = {
+        "AXButton", "AXCheckBox", "AXRadioButton", "AXComboBox", "AXTextField",
+        "AXTextArea", "AXMenuItem", "AXLink", "AXTab", "AXPopUpButton",
+        "AXSlider", "AXIncrementor", "AXDisclosureTriangle",
+    }
+
+    if w > 0 and h > 0:
+        out.append({
+            "type": "accessibility",
+            "role": str(role),
+            "name": str(title),
+            "x": x,
+            "y": y,
+            "width": w,
+            "height": h,
+            "actionable": str(role) in actionable_roles,
+            "enabled": bool(_value(Quartz, element, "AXEnabled") is not False),
+            "focused": bool(_value(Quartz, element, "AXFocused") is True),
+        })
+
+    children = _value(Quartz, element, "AXChildren") or []
+    for child in children:
+        _walk(Quartz, child, out, depth + 1)
