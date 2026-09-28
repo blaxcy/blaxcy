@@ -18,7 +18,7 @@ class FakeAccessibility:
 
 
 def test_semantic_normalizes_accessibility():
-    analyzer = SemanticAnalyzer(SemanticConfig(ocr=False, accessibility=False))
+    analyzer = SemanticAnalyzer(SemanticConfig(ocr=False, accessibility=True))
     analyzer.accessibility = FakeAccessibility()
     result = analyzer.analyze(np.zeros((100, 100, 3), dtype=np.uint8))
     assert len(result) == 1
