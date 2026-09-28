@@ -48,7 +48,7 @@ class Eye:
                     self._previous_gray = gray
                     self._state.revision += 1
                     self._last_keyframe = time.monotonic()
-                    emit(event("eye.keyframe", **self._state.keyframe()))
+                    self._emit_keyframe(emit)
                 else:
                     self._process_change(gray, emit)
 
@@ -57,11 +57,21 @@ class Eye:
                 if time.monotonic() - self._last_keyframe >= self.config.keyframe_every:
                     self._state.revision += 1
                     self._last_keyframe = time.monotonic()
-                    emit(event("eye.keyframe", **self._state.keyframe()))
+                    self._emit_keyframe(emit)
 
                 remaining = interval - (time.perf_counter() - started)
                 if remaining > 0:
                     time.sleep(remaining)
+
+    def _emit_keyframe(self, emit: Callable[[dict], None]) -> None:
+        assert self._state is not None
+        emit(event(
+            "eye.keyframe",
+            revision=self._state.revision,
+            screen={"width": self._state.width, "height": self._state.height},
+            elements=self._state.elements,
+            cursor=self._state.cursor,
+        ))
 
     def _process_change(self, gray: np.ndarray, emit: Callable[[dict], None]) -> None:
         assert self._previous_gray is not None
