@@ -79,10 +79,12 @@ class Eye:
                 if now - self._last_keyframe >= self.config.keyframe_every:
                     self._refresh_semantics(frame)
                     self._last_keyframe = now
+                    self._state.last_frame_hash = frame_hash
                     self._emit_keyframe(emit, frame)
                 elif now - self._last_resync >= self.config.resync_every:
                     self._refresh_semantics(frame)
                     self._last_resync = now
+                    self._state.last_frame_hash = frame_hash
                     self._emit_keyframe(emit, frame)
 
                 remaining = interval - (time.perf_counter() - started)
