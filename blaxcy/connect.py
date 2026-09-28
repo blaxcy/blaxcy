@@ -61,7 +61,7 @@ def run_connect(fps: int, ocr: bool, host: str, port: int, pairing_path: str) ->
     runtime.emit(event(
         "session.started",
         session="foreground",
-        capabilities=["eye", "mouse", "keyboard"],
+        capabilities=["eye", "mouse", "keyboard", "mcp"],
         transport={"scheme": "ws", "host": host, "port": port},
         token=runtime.token,
         pairing=pairing.public(),
@@ -88,6 +88,12 @@ def main() -> None:
     connect.add_argument("--port", type=int, default=8765)
     connect.add_argument("--pairing-file", default=".blaxcy/pairing.json")
 
+    mcp = sub.add_parser("mcp", help="start the ChatGPT MCP connector")
+    mcp.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
+
     args = parser.parse_args()
     if args.command == "connect":
         raise SystemExit(run_connect(args.fps, args.ocr, args.host, args.port, args.pairing_file))
+    if args.command == "mcp":
+        from .mcp_server import mcp
+        mcp.run(transport=args.transport)
