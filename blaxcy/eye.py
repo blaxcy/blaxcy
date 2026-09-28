@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+import cv2
+import mss
+import numpy as np
+
+from .protocol import event
+from .state import ScreenState
+
+
+@dataclass
+class EyeConfig:
+    target_fps: int = 60
+    change_threshold: int = 12
+    min_changed_area: int = 16
+    keyframe_every: float = 5.0
+
+
+class Eye:
+    """Continuous local screen feed with persistent state and delta events."""
+
+    def __init__(self, config: EyeConfig | None = None):
+        self.config = config or EyeConfig()
+        self._previous_gray: np.ndarray | None = None
+        self._last_keyframe = 0.0
+        self._state: ScreenState | None = None
+
+    def run(self, emit: Callable[[dict], None], stop: Callable[[], bool]) -> None:
+        interval = 1.0 / max(1, self.config.target_fps)
+
+        with mss.mss() as sct:
+            monitor = sct.monitors[1]
+            width = int(monitor["width"])
+            height = int(monitor["height"])
+            self._state = ScreenState(width=width, height=height)
+
+            while not stop():
+                started = time.perf_counter()
+                raw = np.asarray(sct.grab(monitor))
+                frame = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+                if self._previous_gray is None:
+                    self._previous_gray = gray
+                    self._state.revision += 1
+                    self._last_keyframe = time.monotonic()
+                    emit(event("eye.keyframe", **self._state.keyframe()))
+                else:
+                    self._process_change(gray, emit)
+
+                self._previous_gray = gray
+
+                if time.monotonic() - self._last_keyframe >= self.config.keyframe_every:
+                    self._state.revision += 1
+                    self._last_keyframe = time.monotonic()
+                    emit(event("eye.keyframe", **self._state.keyframe()))
+
+                remaining = interval - (time.perf_counter() - started)
+                if remaining > 0:
+                    time.sleep(remaining)
+
+    def _process_change(self, gray: np.ndarray, emit: Callable[[dict], None]) -> None:
+        assert self._previous_gray is not None
+        assert self._state is not None
+
+        diff = cv2.absdiff(gray, self._previous_gray)
+        mask = (diff >= self.config.change_threshold).astype(np.uint8) * 255
+        changed = int(cv2.countNonZero(mask))
+
+        if changed < self.config.min_changed_area:
+            return
+
+        mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        regions: list[dict[str, int]] = []
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w * h >= self.config.min_changed_area:
+                regions.append({"x": x, "y": y, "width": w, "height": h})
+
+        if not regions:
+            return
+
+        self._state.revision += 1
+        emit(event(
+            "eye.delta",
+            revision=self._state.revision,
+            changed_pixels=changed,
+            regions=regions,
+        ))
