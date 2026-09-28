@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import threading
 
-from .commands import execute
+import pyautogui
+
 from .connect import run_connect
-from .github_bridge import GitHubBridge, config_from_env
+from .eye import Eye, EyeConfig
+from .github_control import GitHubMailbox, config_from_env
 
 
 def main() -> None:
@@ -17,52 +20,54 @@ def main() -> None:
     connect.add_argument("--ocr", action="store_true")
     connect.add_argument("--host", default="127.0.0.1")
     connect.add_argument("--port", type=int, default=8765)
+    connect.add_argument("--pairing-file", default=".blaxcy/pairing.json")
+    connect.add_argument("--quiet", action="store_true")
 
-    bridge = sub.add_parser("github-bridge", help="use a GitHub Issue as the device control mailbox")
+    bridge = sub.add_parser(
+        "github-bridge",
+        help="run EYE and receive structured commands through the GitHub control plane",
+    )
     bridge.add_argument("--poll", type=float, default=None)
+    bridge.add_argument("--fps", type=int, default=30)
+    bridge.add_argument("--ocr", action="store_true")
 
     args = parser.parse_args()
 
     if args.command == "connect":
-        raise SystemExit(run_connect(args.fps, args.ocr, args.host, args.port))
+        raise SystemExit(run_connect(
+            args.fps, args.ocr, args.host, args.port, args.pairing_file, args.quiet
+        ))
 
     if args.command == "github-bridge":
         from dataclasses import replace
-        import pyautogui
-        from .eye import Eye, EyeConfig
 
         stop_event = threading.Event()
-        latest: dict = {}
-
-        def emit(message: dict) -> None:
-            nonlocal latest
-            if message.get("type") in {"eye.keyframe", "eye.delta", "eye.cursor"}:
-                latest = message
-            print(message, flush=True)
-
         cfg = config_from_env()
         if args.poll is not None:
-            cfg = replace(cfg, poll_seconds=max(0.5, args.poll))
+            cfg = replace(cfg, poll_seconds=max(2.0, args.poll))
 
-        bridge = GitHubBridge(
-            cfg,
-            execute_command=lambda command: execute(
-                command, int(pyautogui.size().width), int(pyautogui.size().height)
-            ),
-            state_provider=lambda: latest,
-        )
+        mailbox = GitHubMailbox(cfg)
+        width, height = map(int, pyautogui.size())
 
         worker = threading.Thread(
-            target=bridge.run, args=(stop_event.is_set,), daemon=True
+            target=mailbox.run,
+            args=(width, height, stop_event.is_set),
+            daemon=True,
+            name="blaxcy-github-control",
         )
         worker.start()
 
-        try:
-            Eye(EyeConfig(ocr=False)).run(emit, stop_event.is_set)
-        except KeyboardInterrupt:
-            pass
-        finally:
+        def stop(*_args) -> None:
             stop_event.set()
+
+        signal.signal(signal.SIGINT, stop)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, stop)
+
+        Eye(EyeConfig(target_fps=args.fps, ocr=args.ocr)).run(
+            lambda message: print(message, flush=True),
+            stop_event.is_set,
+        )
 
 
 if __name__ == "__main__":
