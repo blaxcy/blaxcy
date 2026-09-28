@@ -8,7 +8,7 @@ import threading
 import mss
 
 from .eye import Eye, EyeConfig
-from .protocol import encode, event, session_token
+from .protocol import encode, event
 from .pairing import create_pairing, save_pairing, fingerprint
 from .chatgpt import tool_manifest
 from .transport import LocalTransport
