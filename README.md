@@ -1,72 +1,102 @@
 # BLAXCY
 
-Foreground device-control runtime with a GitHub-centered recovery/control bridge.
+Recoverable foreground device-control runtime with EYE, MOUSE, KEYBOARD, native accessibility and an MCP connector.
 
 ## Architecture
 
-The repository contains the complete recoverable implementation. No permanent BLAXCY background agent is required.
+The repository contains the recoverable implementation. A replacement device can clone it and recreate the runtime without depending on the lost device.
 
     GitHub repository
           ↓
-    clone + setup
+    clone + one bootstrap command
           ↓
-    foreground BLAXCY runtime
+    BLAXCY runtime
        ↙       ↓       ↘
      EYE     MOUSE   KEYBOARD
-          ↕
-    GitHub control mailbox
-          ↕
-       ChatGPT
+       ↕
+    local authenticated transport
+       ↕
+    BLAXCY MCP connector
 
-The GitHub bridge uses an Issue's comments as a durable command mailbox. The device polls for structured commands and posts structured results. This removes the need for a separately hosted permanent relay for command/control.
+## Install
 
-GitHub is not a millisecond realtime media transport. The bridge is therefore a control/recovery channel, not a high-frequency video transport.
+After cloning:
 
-## Local mode
+    python bootstrap.py
+
+Then:
 
     python -m blaxcy connect
 
-This starts the existing authenticated loopback WebSocket for a low-latency local client.
+The MCP server can start the runtime automatically when it is invoked:
 
-## GitHub bridge
+    blaxcy-mcp
 
-The bridge uses one GitHub Issue as the mailbox.
+A client that supports MCP can use .mcp.json as the local server configuration.
 
-Set these environment variables on the device. Never commit the token:
+## ChatGPT connection
 
-    BLAXCY_GITHUB_REPOSITORY=blaxcy/blaxcy
-    BLAXCY_GITHUB_ISSUE=<issue number>
-    BLAXCY_GITHUB_TOKEN=<fine-grained token>
-    BLAXCY_GITHUB_ALLOWED_ACTOR=blaxcy
+The repository now contains the BLAXCY MCP server and the complete device-side protocol. It exposes:
 
-Then run:
+- system_status
+- eye_state
+- eye_snapshot
+- eye_events
+- mouse_move
+- mouse_click
+- mouse_scroll
+- keyboard_press
+- keyboard_hotkey
+- keyboard_type
 
-    python -m blaxcy github-bridge
+The MCP server starts/reaches the foreground runtime locally and authenticates with a per-session pairing file.
 
-A command is a GitHub Issue comment beginning with:
+Important: a repository cannot automatically register itself as a ChatGPT connector. The final ChatGPT-side step still requires the ChatGPT environment to be configured to use this MCP server. The connector implementation itself is now in the repository.
+
+## EYE
+
+EYE continuously captures the screen, performs pixel-change detection, tracks cursor changes, maintains revisions, emits semantic keyframes and JPEG visual keyframes, and emits JPEG patches for changed regions.
+
+The semantic layer combines:
+
+- Windows UI Automation through pywinauto
+- Linux AT-SPI through pyatspi
+- macOS Accessibility APIs through PyObjC/Quartz
+- optional OCR
+- pixel geometry
+
+Install platform extras when required:
+
+    pip install -e ".[windows]"
+    pip install -e ".[linux]"
+    pip install -e ".[macos]"
+    pip install -e ".[ocr]"
+
+Native accessibility APIs may require OS-level Accessibility/AT-SPI permission.
+
+## GitHub control bridge
+
+A GitHub Issue mailbox is available for environments that can use GitHub as the control channel. The device polls structured BLAXCY_CMD comments and posts BLAXCY_RESULT comments.
 
     BLAXCY_CMD {"id":"cmd-1","command":{"action":"mouse.click","x":820,"y":430}}
 
-The device posts:
+This is a recovery/control channel, not a realtime video transport. GitHub comments are too slow and too large for high-frequency EYE media.
 
-    BLAXCY_RESULT {"id":"cmd-1","ok":true,"result":{...}}
-
-Only the existing structured mouse/keyboard command executor is exposed. Arbitrary shell execution is not available.
-
-GitHub's REST API supports reading and creating Issue comments; fine-grained tokens can be restricted to the repository Issues permission needed by this bridge.
+Never commit a GitHub token. For real control, use a private repository and a fine-grained token limited to the required Issues permission.
 
 ## Security
 
-Use a private repository for a real control mailbox. Issue comments on a public repository are publicly readable, so the current public blaxcy/blaxcy repository should be treated as development-only for this bridge until its visibility is changed.
+- foreground device runtime
+- random per-session pairing token
+- pairing file kept outside Git history
+- loopback-only local WebSocket by default
+- bounded mouse/keyboard commands
+- no arbitrary shell execution
+- MCP does not expose the pairing token
+- Ctrl+C stops the runtime
 
-The device keeps the GitHub token outside the repository, checks the GitHub actor before accepting commands, and uses the existing bounded command executor.
+## Current boundary
 
-## Recovery
+The repo-side implementation is now complete for the device runtime, EYE visual/semantic layer, local MCP connector, pairing and GitHub control mailbox.
 
-The source, bridge, protocol, device runtime, and setup code live in the repository. A replacement device can clone the repository and recreate the runtime without relying on the lost device.
-
-## EYE status
-
-EYE continuously captures the screen, performs pixel-change detection, tracks cursor changes, maintains revisions, emits dirty-region deltas, and periodically emits semantic keyframes. It remains local-first; the GitHub bridge should carry control/state summaries rather than raw high-frequency frames.
-
-A true realtime visual stream still requires a realtime media transport; GitHub comments are intentionally not used as a fake video stream.
+The remaining external step is connecting that MCP server to the particular ChatGPT environment. That registration cannot be performed by code committed to GitHub alone.
