@@ -48,10 +48,11 @@ The repository now contains the BLAXCY MCP server and the complete device-side p
 - keyboard_press
 - keyboard_hotkey
 - keyboard_type
+- leader_command (compact EYE-aware command execution)
 
 The MCP server starts/reaches the foreground runtime locally and authenticates with a per-session pairing file.
 
-Important: a repository cannot automatically register itself as a ChatGPT connector. The final ChatGPT-side step still requires the ChatGPT environment to be configured to use this MCP server. The connector implementation itself is now in the repository.
+Important: a repository cannot automatically register itself as a ChatGPT connector. The final ChatGPT-side step still requires the ChatGPT environment to be configured to use this MCP server. The connector implementation itself is now in the repository. The Leader layer lets the reasoning side send short commands such as `click Submit`, `press enter`, `type hello`, or `scroll -5`; it resolves unique EYE semantic targets to coordinates before invoking bounded mouse/keyboard controls.
 
 ## EYE
 
