@@ -32,8 +32,9 @@ There is no permanent background agent.
 
 Activate the virtual environment, then:
 
-    python -m pip install -e .
-    python -m blaxcy connect
+    python scripts/bootstrap.py
+
+This creates the local virtual environment, installs the repo, creates a fresh pairing, and starts the foreground runtime in one command. For manual operation, `python -m pip install -e .` followed by `python -m blaxcy connect` is also supported.
 
 Optional OCR:
 
