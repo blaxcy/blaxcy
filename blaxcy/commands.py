@@ -22,11 +22,14 @@ def execute(command: dict[str, Any], screen_width: int, screen_height: int) -> d
         x, y = _xy(command, screen_width, screen_height)
         click(x, y, str(command.get("button", "left")), int(command.get("clicks", 1)))
     elif action == "mouse.scroll":
-        x, y = _xy(command, screen_width, screen_height)
         amount = int(command.get("amount", 0))
         if abs(amount) > 100:
             raise CommandError("scroll amount too large")
-        scroll(x, y, amount)
+        if "x" in command or "y" in command:
+            x, y = _xy(command, screen_width, screen_height)
+            scroll(x, y, amount)
+        else:
+            scroll(None, None, amount)
     elif action == "keyboard.press":
         press(_key(command))
     elif action == "keyboard.hotkey":
