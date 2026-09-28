@@ -47,6 +47,8 @@ class GitHubMailboxConfig:
     ack_path: str = ".blaxcy/command_ack.json"
     poll_seconds: float = 5.0
     allowed_actor: str | None = None
+    require_fresh_seconds: int = 60
+    require_commit_author: bool = True
 
 
 class GitHubMailbox:
@@ -73,6 +75,19 @@ class GitHubMailbox:
                 return None
             raise RuntimeError(f"GitHub API {exc.code}: {exc.read().decode('utf-8', 'replace')[:500]}")
 
+    def _latest_commit_actor(self) -> str | None:
+        owner, repo = self.config.repository.split("/", 1)
+        path = self.config.command_path.lstrip("/").replace("/", "%2F")
+        response = self._request("GET", f"/repos/{owner}/{repo}/commits?path={path}&sha={self.config.branch}&per_page=1")
+        if response is None:
+            return None
+        rows = json.loads(response.read().decode("utf-8"))
+        if not rows:
+            return None
+        row = rows[0]
+        author = row.get("author") or {}
+        return author.get("login") or None
+
     def read_command(self) -> dict[str, Any] | None:
         owner, repo = self.config.repository.split("/", 1)
         path = self.config.command_path.lstrip("/")
@@ -88,7 +103,10 @@ class GitHubMailbox:
         self._command_sha = data.get("sha")
         raw = base64.b64decode(data["content"].replace("\n", "")).decode("utf-8")
         value = json.loads(raw)
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        value["_commit_actor"] = self._latest_commit_actor()
+        return value
 
     def write_ack(self, payload: dict[str, Any]) -> None:
         owner, repo = self.config.repository.split("/", 1)
@@ -135,18 +153,47 @@ class GitHubMailbox:
         if not isinstance(cid, str) or not cid or cid == self._last_id:
             return False
 
-        if self.config.allowed_actor:
-            actor = str(command.get("actor", ""))
-            if actor != self.config.allowed_actor:
+        issued_at = command.get("issued_at")
+        if self.config.require_fresh_seconds > 0:
+            try:
+                age = abs(time.time() - float(issued_at))
+            except (TypeError, ValueError):
+                age = float("inf")
+            if age > self.config.require_fresh_seconds:
                 self._last_id = cid
                 self.write_ack({
-                    "protocol": "blaxcy/github-bridge/0.2",
+                    "protocol": "blaxcy/github-bridge/0.3",
                     "command_id": cid,
                     "ok": False,
-                    "error": "actor not allowed",
+                    "error": "stale or missing issued_at",
                     "ts_ns": time.time_ns(),
                 })
                 return True
+
+        actor = str(command.get("actor", ""))
+        commit_actor = str(command.get("_commit_actor") or "")
+        expected_actor = self.config.allowed_actor or commit_actor
+        if expected_actor and actor != expected_actor:
+            self._last_id = cid
+            self.write_ack({
+                "protocol": "blaxcy/github-bridge/0.3",
+                "command_id": cid,
+                "ok": False,
+                "error": "actor not allowed",
+                "commit_actor": commit_actor,
+                "ts_ns": time.time_ns(),
+            })
+            return True
+        if self.config.require_commit_author and not commit_actor:
+            self._last_id = cid
+            self.write_ack({
+                "protocol": "blaxcy/github-bridge/0.3",
+                "command_id": cid,
+                "ok": False,
+                "error": "command commit author could not be verified",
+                "ts_ns": time.time_ns(),
+            })
+            return True
 
         allowed = {
             "id", "actor", "action", "x", "y", "button", "clicks",
@@ -173,7 +220,7 @@ class GitHubMailbox:
 
         self._last_id = cid
         payload = {
-            "protocol": "blaxcy/github-bridge/0.2",
+            "protocol": "blaxcy/github-bridge/0.3",
             "command_id": cid,
             "ok": ok,
             "ts_ns": time.time_ns(),
@@ -202,4 +249,6 @@ def config_from_env() -> GitHubMailboxConfig:
         ack_path=os.environ.get("BLAXCY_GITHUB_ACK_PATH", ".blaxcy/command_ack.json"),
         poll_seconds=float(os.environ.get("BLAXCY_GITHUB_POLL", "5")),
         allowed_actor=os.environ.get("BLAXCY_GITHUB_ACTOR") or None,
+        require_fresh_seconds=int(os.environ.get("BLAXCY_GITHUB_COMMAND_TTL", "60")),
+        require_commit_author=os.environ.get("BLAXCY_GITHUB_VERIFY_COMMIT", "1").lower() not in {"0", "false", "no"},
     )
